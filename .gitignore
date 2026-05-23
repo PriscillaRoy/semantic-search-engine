@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+.env
+
+# Model cache (large files, don't commit)
+.cache/
+*.bin
+*.pt
+
+# FAISS index (regenerated from code)
+indexes/
