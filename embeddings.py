@@ -41,14 +41,15 @@ def build_index(embeddings):
     return index
 
 # ── Save index + metadata ──────────────────────────────
-def save(index, model, df):
+def save(index, model, df, embeddings):
     faiss.write_index(index, str(INDEX_PATH))
     with open(META_PATH, "wb") as f:
         pickle.dump({
             "meta": df.to_dict(orient="records"),
             "model": model
         }, f)
-    print(f"[Save] Index and metadata saved\n")
+    np.save(str(Path("indexes/embeddings.npy")), embeddings)
+    print(f"[Save] Index, metadata and embeddings saved\n")
 
 # ── Step 4: Query similar titles ───────────────────────
 def find_similar(query_title, top_k=4):
@@ -88,7 +89,7 @@ if __name__ == "__main__":
     df = load_data()
     embeddings, model = embed_descriptions(df)
     index = build_index(embeddings)
-    save(index, model, df)
+    save(index, model, df, embeddings)
 
     print("=" * 50)
     for title in ["Inception", "Hereditary", "The Martian"]:
