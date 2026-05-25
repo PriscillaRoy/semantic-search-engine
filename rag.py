@@ -4,61 +4,41 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import faiss
 import pickle
 import numpy as np
-import pandas as pd
 import ollama
 from pathlib import Path
 from graph import combined_recommend_silent
+from database import get_movie_by_title, get_all_movies
+from config import (DATA_PATH, INDEX_PATH, META_PATH,
+                    GRAPH_PATH, OLLAMA_MODEL)
 
 
-DATA_PATH  = Path("data/movies.csv")
-INDEX_PATH = Path("indexes/movies.faiss")
-META_PATH  = Path("indexes/movies_meta.pkl")
-GRAPH_PATH = Path("indexes/movies_graph.pkl")
-
-
-# ── Step 1: Retrieve — FAISS + Graph ──────────────────
 def retrieve(query_title, top_k=3):
-    """
-    Now uses FAISS + Graph combined scoring
-    instead of FAISS alone.
-    """
-    index = faiss.read_index(str(INDEX_PATH))
-    with open(META_PATH, "rb") as f:
-        payload = pickle.load(f)
-    meta  = payload["meta"]
-    model = payload["model"]
-
-    match = [m for m in meta if m["title"].lower() == query_title.lower()]
-    if not match:
+    matches = get_movie_by_title(query_title)
+    if not matches:
         print(f"'{query_title}' not found.")
         return None, []
+    q = matches[0]    # ← fix: get first match from list
 
-    q = match[0]
-
-    # Use combined FAISS + Graph scoring
-    from graph import combined_recommend_silent
-    ranked = combined_recommend_silent(query_title, top_k=top_k)
+    ranked    = combined_recommend_silent(query_title, top_k=top_k)
+    all_movies = get_all_movies()
+    movie_map  = {m["title"]: m for m in all_movies}
 
     results = []
     for title, score in ranked:
-        movie = next((m for m in meta if m["title"] == title), None)
-        if movie:
+        m = movie_map.get(title)
+        if m:
             results.append({
-                "title":       movie["title"],
-                "year":        movie["year"],
-                "genre":       movie["genre"],
-                "description": movie["description"],
+                "title":       m["title"],
+                "year":        m["year"],
+                "genre":       m["genre"],
+                "description": m["description"],
                 "similarity":  round(score, 4)
             })
 
     return q, results
-# ── Step 2: Augment — Build the prompt ────────────────
+
+
 def build_prompt(query_movie, retrieved_movies):
-    """
-    Augment the prompt with retrieved context.
-    This is the A in RAG — stuffing context into the prompt.
-    The LLM knows NOTHING except what we put here.
-    """
     context = ""
     for i, m in enumerate(retrieved_movies):
         context += f"""
@@ -86,38 +66,28 @@ Format your response as:
     return prompt
 
 
-# ── Step 3: Generate — LLM explains the recommendations
 def generate(prompt):
-    """
-    Generate natural language explanation using Ollama.
-    This is the G in RAG — generation grounded in context.
-    """
     response = ollama.chat(
-        model="llama3.2",
+        model=OLLAMA_MODEL,
         messages=[{"role": "user", "content": prompt}]
     )
     return response["message"]["content"]
 
 
-# ── Full RAG pipeline ──────────────────────────────────
 def rag_recommend(query_title):
     print(f"\n{'═' * 55}")
     print(f"RAG Recommendations for: '{query_title}'")
     print(f"{'═' * 55}")
 
-    # Step 1: Retrieve
     print("[1/3] Retrieving similar movies via FAISS...")
     query_movie, retrieved = retrieve(query_title)
     if not retrieved:
         return
 
     print(f"      Found: {[m['title'] for m in retrieved]}")
-
-    # Step 2: Augment
     print("[2/3] Building prompt with retrieved context...")
     prompt = build_prompt(query_movie, retrieved)
 
-    # Step 3: Generate
     print("[3/3] Generating explanation with LLaMA 3.2...")
     explanation = generate(prompt)
 
@@ -125,7 +95,6 @@ def rag_recommend(query_title):
     return explanation
 
 
-# ── Main ──────────────────────────────────────────────
 if __name__ == "__main__":
     queries = ["The Martian", "Inception", "Hereditary"]
     for title in queries:

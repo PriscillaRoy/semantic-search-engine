@@ -1,47 +1,36 @@
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 import networkx as nx
 import pandas as pd
 import pickle
 import faiss
 import numpy as np
 from pathlib import Path
+from database import get_all_movies, get_movie_by_title
+from config import (DATA_PATH, INDEX_PATH, META_PATH,
+                    GRAPH_PATH, EMB_PATH,
+                    SIMILARITY_THRESHOLD, OLLAMA_MODEL)
 
 
-DATA_PATH  = Path("data/movies.csv")
-INDEX_PATH = Path("indexes/movies.faiss")
-META_PATH  = Path("indexes/movies_meta.pkl")
-GRAPH_PATH = Path("indexes/movies_graph.pkl")
-
-
-# ── Step 1: Build graph from dataset ──────────────────
 def build_graph(df):
     G = nx.Graph()
-
     for _, row in df.iterrows():
-        G.add_node(row["title"],
-                   type="movie",
-                   genre=row["genre"],
-                   year=row["year"])
-
+        G.add_node(row["title"], type="movie",
+                   genre=row["genre"], year=row["year"])
     for _, row in df.iterrows():
         genre = row["genre"]
         if not G.has_node(genre):
             G.add_node(genre, type="genre")
         G.add_edge(row["title"], genre, relation="HAS_GENRE")
-
     print(f"[Graph] Nodes: {G.number_of_nodes()}")
     print(f"[Graph] Edges: {G.number_of_edges()}")
     return G
 
 
-# ── Step 2: Add FAISS similarity scores as edges ──────
-def add_similarity_edges(G, df, threshold=0.25):
+def add_similarity_edges(G, df, threshold=SIMILARITY_THRESHOLD):
     index = faiss.read_index(str(INDEX_PATH))
-
-    # Load precomputed embeddings instead of recomputing
-    embeddings = np.load("indexes/embeddings.npy")
-
+    embeddings = np.load(str(EMB_PATH))
     for i, row in df.iterrows():
         distances, indices = index.search(embeddings[i:i+1], 6)
         for dist, idx in zip(distances[0], indices[0]):
@@ -52,14 +41,12 @@ def add_similarity_edges(G, df, threshold=0.25):
                 G.add_edge(row["title"], other_title,
                            relation="IS_SIMILAR_TO",
                            weight=float(dist))
-
     similar_edges = [(u, v) for u, v, d in G.edges(data=True)
                      if d.get("relation") == "IS_SIMILAR_TO"]
     print(f"[Graph] Similarity edges added: {len(similar_edges)}")
     return G
 
 
-# ── Step 3: Save and load graph ───────────────────────
 def save_graph(G):
     with open(GRAPH_PATH, "wb") as f:
         pickle.dump(G, f)
@@ -70,23 +57,19 @@ def load_graph():
         return pickle.load(f)
 
 
-# ── Step 4: Query recommendations from graph ──────────
 def graph_recommend(query_title, top_k=4, verbose=True):
     G = load_graph()
-
     if query_title not in G:
         print(f"'{query_title}' not found in graph.")
         return []
 
     scores = {}
-
     for neighbor in G.neighbors(query_title):
         node_type = G.nodes[neighbor]["type"]
         edge_data = G[query_title][neighbor]
         relation  = edge_data.get("relation")
 
         if node_type == "genre":
-            # Two-hop: find all movies sharing this genre
             for movie_node in G.neighbors(neighbor):
                 if movie_node == query_title:
                     continue
@@ -95,7 +78,6 @@ def graph_recommend(query_title, top_k=4, verbose=True):
                 scores[movie_node] = scores.get(movie_node, 0) + 1
 
         elif node_type == "movie" and relation == "IS_SIMILAR_TO":
-            # Direct similarity edge with weight
             weight = edge_data.get("weight", 0)
             scores[neighbor] = scores.get(neighbor, 0) + weight
 
@@ -113,35 +95,32 @@ def graph_recommend(query_title, top_k=4, verbose=True):
     return ranked[:top_k]
 
 
-# ── Step 5: Combined FAISS + Graph ranking ─────────────
 def combined_recommend(query_title, top_k=4):
     index = faiss.read_index(str(INDEX_PATH))
     with open(META_PATH, "rb") as f:
         payload = pickle.load(f)
-    meta  = payload["meta"]
-    model = payload["model"]
+    model      = payload["model"]
+    all_movies = get_all_movies()
 
-    match = [m for m in meta if m["title"].lower() == query_title.lower()]
-    if not match:
+    matches = get_movie_by_title(query_title)
+    if not matches:
         print(f"'{query_title}' not found.")
         return
+    q = matches[0]    # ← fix: get first match from list
 
-    q = match[0]
     qvec = model.encode([q["description"]]).astype(np.float32)
     faiss.normalize_L2(qvec)
     distances, indices = index.search(qvec, top_k + 1)
 
     faiss_scores = {}
     for dist, idx in zip(distances[0], indices[0]):
-        title = meta[idx]["title"]
+        title = all_movies[idx]["title"]
         if title.lower() != query_title.lower():
             faiss_scores[title] = float(dist)
 
-    # Call graph_recommend silently — no printing
     graph_results = graph_recommend(query_title, top_k=top_k, verbose=False)
     graph_scores  = {title: score for title, score in graph_results}
 
-    # Combine scores
     all_titles = set(faiss_scores) | set(graph_scores)
     combined = {}
     for title in all_titles:
@@ -151,36 +130,32 @@ def combined_recommend(query_title, top_k=4):
         combined[title] = (f_score + g_normalized) / 2
 
     ranked = sorted(combined.items(), key=lambda x: x[1], reverse=True)
-
     print(f"\nCombined recommendations for '{query_title}':")
     print("─" * 50)
     for i, (title, score) in enumerate(ranked[:top_k]):
         print(f"  {i+1}. {title}  combined_score={score:.4f}")
     print()
 
+
 def combined_recommend_silent(query_title, top_k=4):
-    """
-    Same as combined_recommend but returns 
-    ranked list silently — for use by rag.py
-    """
     index = faiss.read_index(str(INDEX_PATH))
     with open(META_PATH, "rb") as f:
         payload = pickle.load(f)
-    meta  = payload["meta"]
-    model = payload["model"]
+    model      = payload["model"]
+    all_movies = get_all_movies()
 
-    match = [m for m in meta if m["title"].lower() == query_title.lower()]
-    if not match:
+    matches = get_movie_by_title(query_title)
+    if not matches:
         return []
+    q = matches[0]    # ← fix: get first match from list
 
-    q = match[0]
     qvec = model.encode([q["description"]]).astype(np.float32)
     faiss.normalize_L2(qvec)
     distances, indices = index.search(qvec, top_k + 1)
 
     faiss_scores = {}
     for dist, idx in zip(distances[0], indices[0]):
-        title = meta[idx]["title"]
+        title = all_movies[idx]["title"]
         if title.lower() != query_title.lower():
             faiss_scores[title] = float(dist)
 
@@ -197,29 +172,23 @@ def combined_recommend_silent(query_title, top_k=4):
 
     return sorted(combined.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
-# ── Step 6: Inspect graph (debug utility) ─────────────
+
 def inspect_graph(G):
     print("\n── NODES ──")
     for node, attrs in G.nodes(data=True):
         print(f"  {node}: {attrs}")
-
     print("\n── EDGES ──")
     for u, v, attrs in G.edges(data=True):
         print(f"  {u} ──{attrs}──► {v}")
 
 
-# ── Main ──────────────────────────────────────────────
 if __name__ == "__main__":
     df = pd.read_csv(DATA_PATH)
-
     G = build_graph(df)
     G = add_similarity_edges(G, df)
     save_graph(G)
-    inspect_graph(G)
-
     print("=" * 50)
     print("GRAPH READY — Running recommendations")
     print("=" * 50)
-
     for title in ["The Martian", "Inception", "Hereditary"]:
         combined_recommend(title)

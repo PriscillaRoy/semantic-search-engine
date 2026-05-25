@@ -4,11 +4,11 @@ import faiss
 import pickle
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
+from database import init_db, get_all_movies, get_movie_by_title
 
 # ── Paths ──────────────────────────────────────────────
-DATA_PATH  = Path("data/movies.csv")
-INDEX_PATH = Path("indexes/movies.faiss")
-META_PATH  = Path("indexes/movies_meta.pkl")
+from config import (DATA_PATH, INDEX_PATH, META_PATH, 
+                    EMB_PATH, EMBEDDING_MODEL)
 
 # ── Step 1: Load data ──────────────────────────────────
 def load_data():
@@ -43,39 +43,50 @@ def build_index(embeddings):
 # ── Save index + metadata ──────────────────────────────
 def save(index, model, df, embeddings):
     faiss.write_index(index, str(INDEX_PATH))
+    
+    # Save embeddings separately
+    np.save(str(EMB_PATH), embeddings)
+    
+    # Save model separately (still pickle — it's a Python object)
     with open(META_PATH, "wb") as f:
-        pickle.dump({
-            "meta": df.to_dict(orient="records"),
-            "model": model
-        }, f)
-    np.save(str(Path("indexes/embeddings.npy")), embeddings)
-    print(f"[Save] Index, metadata and embeddings saved\n")
+        pickle.dump({"model": model}, f)
+
+    # Initialize SQLite with movie data
+    init_db()
+    
+    print(f"[Save] Index, embeddings, model and database saved\n")
 
 # ── Step 4: Query similar titles ───────────────────────
-def find_similar(query_title, top_k=4):
+def find_similar(query_title, top_k=4, year=None):
     index = faiss.read_index(str(INDEX_PATH))
     with open(META_PATH, "rb") as f:
         payload = pickle.load(f)
-    meta  = payload["meta"]
-    model = payload["model"]
+    model      = payload["model"]
+    all_movies = get_all_movies()
 
-    match = [m for m in meta if m["title"].lower() == query_title.lower()]
-    if not match:
+    # Handle duplicates
+    matches = get_movie_by_title(query_title, year=year)
+    if not matches:
         print(f"'{query_title}' not found.")
         return
+    if len(matches) > 1 and year is None:
+        print(f"Multiple matches for '{query_title}':")
+        for m in matches:
+            print(f"  → {m['title']} ({m['year']}) [{m['genre']}]")
+        print(f"Re-run with year: find_similar('{query_title}', year=1986)")
+        return
 
-    q = match[0]
+    q = matches[0]
     print(f"Query: {q['title']} ({q['year']}) [{q['genre']}]")
 
     qvec = model.encode([q["description"]]).astype(np.float32)
     faiss.normalize_L2(qvec)
-
     distances, indices = index.search(qvec, top_k + 1)
 
     print(f"Top {top_k} similar movies:")
     shown = 0
     for dist, idx in zip(distances[0], indices[0]):
-        r = meta[idx]
+        r = all_movies[idx]
         if r["title"].lower() == query_title.lower():
             continue
         print(f"  {shown+1}. {r['title']} ({r['year']}) [{r['genre']}]  sim={dist:.4f}")
@@ -83,6 +94,39 @@ def find_similar(query_title, top_k=4):
         if shown == top_k:
             break
     print()
+
+def search_by_description(query_text: str, top_k: int = 4):
+    """
+    Search by raw description text.
+    Works for ANY query — movie doesn't need to be in catalog.
+    This is the core of semantic search.
+    """
+    index = faiss.read_index(str(INDEX_PATH))
+    with open(META_PATH, "rb") as f:
+        payload = pickle.load(f)
+    model      = payload["model"]
+    all_movies = get_all_movies()
+
+    # Encode the raw query text directly
+    qvec = model.encode([query_text]).astype(np.float32)
+    faiss.normalize_L2(qvec)
+
+    distances, indices = index.search(qvec, top_k)
+
+    print(f"\nSearch results for: '{query_text}'")
+    print("─" * 50)
+    results = []
+    for dist, idx in zip(distances[0], indices[0]):
+        m = all_movies[idx]
+        print(f"  {m['title']} ({m['year']}) [{m['genre']}]  sim={dist:.4f}")
+        results.append({
+            "title":      m["title"],
+            "year":       m["year"],
+            "genre":      m["genre"],
+            "similarity": round(float(dist), 4)
+        })
+    print()
+    return results
 
 # ── Main ───────────────────────────────────────────────
 if __name__ == "__main__":
@@ -92,5 +136,14 @@ if __name__ == "__main__":
     save(index, model, df, embeddings)
 
     print("=" * 50)
+    print("SIMILARITY SEARCH")
+    print("=" * 50)
     for title in ["Inception", "Hereditary", "The Martian"]:
         find_similar(title)
+
+    print("=" * 50)
+    print("DESCRIPTION SEARCH — movies not in catalog")
+    print("=" * 50)
+    search_by_description("astronaut alone survival space")
+    search_by_description("family haunted dark secrets supernatural")
+    search_by_description("hacker simulation virtual reality")
