@@ -158,6 +158,44 @@ def combined_recommend(query_title, top_k=4):
         print(f"  {i+1}. {title}  combined_score={score:.4f}")
     print()
 
+def combined_recommend_silent(query_title, top_k=4):
+    """
+    Same as combined_recommend but returns 
+    ranked list silently — for use by rag.py
+    """
+    index = faiss.read_index(str(INDEX_PATH))
+    with open(META_PATH, "rb") as f:
+        payload = pickle.load(f)
+    meta  = payload["meta"]
+    model = payload["model"]
+
+    match = [m for m in meta if m["title"].lower() == query_title.lower()]
+    if not match:
+        return []
+
+    q = match[0]
+    qvec = model.encode([q["description"]]).astype(np.float32)
+    faiss.normalize_L2(qvec)
+    distances, indices = index.search(qvec, top_k + 1)
+
+    faiss_scores = {}
+    for dist, idx in zip(distances[0], indices[0]):
+        title = meta[idx]["title"]
+        if title.lower() != query_title.lower():
+            faiss_scores[title] = float(dist)
+
+    graph_results = graph_recommend(query_title, top_k=top_k, verbose=False)
+    graph_scores  = {title: score for title, score in graph_results}
+
+    all_titles = set(faiss_scores) | set(graph_scores)
+    combined = {}
+    for title in all_titles:
+        f_score = faiss_scores.get(title, 0)
+        g_score = graph_scores.get(title, 0)
+        g_normalized = min(g_score / 2.0, 1.0)
+        combined[title] = (f_score + g_normalized) / 2
+
+    return sorted(combined.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
 # ── Step 6: Inspect graph (debug utility) ─────────────
 def inspect_graph(G):
