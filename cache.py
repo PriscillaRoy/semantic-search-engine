@@ -1,16 +1,15 @@
-# cache.py
-from venv import logger
-
 import redis
 import json
 import hashlib
+from functools import lru_cache
 from config import REDIS_HOST, REDIS_PORT, REDIS_TTL
 
+
+@lru_cache(maxsize=1)
 def get_redis_client():
     """
-    Returns a Redis client.
-    Returns None if Redis is unavailable —
-    app continues without caching rather than crashing.
+    Singleton Redis client — created once, reused forever.
+    Returns None if Redis unavailable — graceful degradation.
     """
     try:
         client = redis.Redis(
@@ -20,21 +19,20 @@ def get_redis_client():
             socket_connect_timeout=2
         )
         client.ping()
+        print("[Cache] Redis connected")
         return client
     except Exception:
+        print("[Cache] Redis unavailable — caching disabled")
         return None
 
 
 def make_cache_key(endpoint: str, params: dict) -> str:
     """
     Creates a deterministic cache key from endpoint + params.
-    Uses MD5 hash so keys stay short regardless of param size.
-
-    Example:
-      endpoint="similar", params={"title": "Inception", "top_k": 4}
-      → "cde:similar:a3f8c2..."
+    sort_keys=True ensures param order doesn't affect the key.
+    MD5 keeps keys short regardless of param complexity.
     """
-    param_str = json.dumps(params, sort_keys=True)
+    param_str  = json.dumps(params, sort_keys=True)
     param_hash = hashlib.md5(param_str.encode()).hexdigest()
     return f"cde:{endpoint}:{param_hash}"
 
@@ -42,7 +40,8 @@ def make_cache_key(endpoint: str, params: dict) -> str:
 def get_cached(key: str):
     """
     Retrieve cached result.
-    Returns parsed dict or None if miss/unavailable.
+    Refreshes TTL on every hit — popular keys never expire.
+    Returns None on miss or if Redis unavailable.
     """
     client = get_redis_client()
     if not client:
@@ -50,6 +49,9 @@ def get_cached(key: str):
     try:
         value = client.get(key)
         if value:
+            # refresh TTL every time this key is accessed
+            # popular keys stay alive, cold keys naturally expire
+            client.expire(key, REDIS_TTL)
             return json.loads(value)
         return None
     except Exception:
@@ -59,7 +61,7 @@ def get_cached(key: str):
 def set_cached(key: str, value: dict, ttl: int = REDIS_TTL):
     """
     Store result in cache with TTL expiry.
-    Silently fails if Redis is unavailable.
+    Silently fails if Redis unavailable.
     """
     client = get_redis_client()
     if not client:
@@ -73,7 +75,7 @@ def set_cached(key: str, value: dict, ttl: int = REDIS_TTL):
 def invalidate_cache(pattern: str = "cde:*"):
     """
     Delete all cache keys matching pattern.
-    Call this when data changes — e.g. new movies added.
+    Call when data changes — e.g. new movies added.
     """
     client = get_redis_client()
     if not client:
@@ -99,12 +101,18 @@ def get_cache_stats() -> dict:
         info = client.info()
         keys = client.keys("cde:*")
         return {
-            "status":        "connected",
-            "cached_keys":   len(keys),
-            "hits":          info.get("keyspace_hits", 0),
-            "misses":        info.get("keyspace_misses", 0),
-            "memory_used":   info.get("used_memory_human", "unknown"),
-            "ttl_seconds":   REDIS_TTL,
+            "status":      "connected",
+            "cached_keys": len(keys),
+            "hits":        info.get("keyspace_hits", 0),
+            "misses":      info.get("keyspace_misses", 0),
+            "hit_ratio":   round(
+                info.get("keyspace_hits", 0) /
+                max(1, info.get("keyspace_hits", 0) +
+                       info.get("keyspace_misses", 0)),
+                3
+            ),
+            "memory_used": info.get("used_memory_human", "unknown"),
+            "ttl_seconds": REDIS_TTL,
         }
     except Exception:
         return {"status": "error"}
