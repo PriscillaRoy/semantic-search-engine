@@ -1,5 +1,7 @@
 # config.py
 from pathlib import Path
+import math
+import sqlite3
 
 # ── Paths ──────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
@@ -16,8 +18,41 @@ EMBEDDING_DIM   = 384
 
 # ── FAISS ──────────────────────────────────────────────
 SIMILARITY_THRESHOLD = 0.25
-FAISS_INDEX_TYPE     = "flat"   # "flat" | "ivf"
-IVF_NLIST            = 4        # number of clusters for IVF
+# ── FAISS index type ───────────────────────────────────
+# "flat"   → IndexFlatIP, exact brute force
+# "ivf"    → IndexIVFFlat, approximate cluster search
+# "ivfpq"  → IndexIVFPQ, compressed cluster search
+FAISS_INDEX_TYPE = "ivf"
+# ── FAISS metric ───────────────────────────────────────
+# "ip" → Inner Product (cosine sim on normalized vectors)
+# "l2" → Euclidean distance
+FAISS_METRIC = "ip"
+
+# ── IVF parameters ────────────────────────────────────
+def get_optimal_nlist() -> int:
+    """
+    Dynamically compute nlist based on current dataset size.
+    Rule: nlist = max(4, sqrt(n))
+    Minimum 4 — IVF needs at least nlist vectors to train.
+    """
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM movies")
+        n = cursor.fetchone()[0]
+        conn.close()
+        return max(4, int(math.sqrt(n)))
+    except:
+        return 4
+
+IVF_NLIST  = get_optimal_nlist()
+IVF_NPROBE = max(1, IVF_NLIST // 2)   # search 50% of clusters — more accurate
+# ── PQ parameters (only used when FAISS_INDEX_TYPE = "ivfpq") ──
+# m = number of subvectors to split each vector into
+# dim must be divisible by m
+# more m = better accuracy, more memory
+# common values: 8, 16, 32
+PQ_M = 8
 
 # ── API ────────────────────────────────────────────────
 DEFAULT_TOP_K = 4

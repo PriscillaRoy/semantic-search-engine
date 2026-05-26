@@ -7,9 +7,9 @@ from sentence_transformers import SentenceTransformer
 from database import init_db, get_all_movies, get_movie_by_title
 
 # ── Paths ──────────────────────────────────────────────
-from config import (DATA_PATH, INDEX_PATH, META_PATH, 
-                    EMB_PATH, EMBEDDING_MODEL)
-
+from config import (DATA_PATH, INDEX_PATH, META_PATH, EMB_PATH, EMBEDDING_MODEL,
+                    FAISS_INDEX_TYPE, FAISS_METRIC, IVF_NLIST, IVF_NPROBE, PQ_M,
+                    EMBEDDING_DIM)
 # ── Step 1: Load data ──────────────────────────────────
 def load_data():
     df = pd.read_csv(DATA_PATH)
@@ -17,15 +17,29 @@ def load_data():
     return df
 
 # ── Step 2: Embed descriptions ─────────────────────────
+def prepare_text(movie: dict) -> str:
+    """
+    Combine multiple fields into richer embedding text.
+    Genre prefix anchors the vector in the right semantic space.
+    Mirrors the prepare_text_for_embedding pattern from match-ai.
+    """
+    return (
+        f"{movie['title']}. "
+        f"Genre: {movie['genre']}. "
+        f"Year: {movie['year']}. "
+        f"{movie['description']}"
+    )
+
 def embed_descriptions(df):
     print("[Step 2] Loading sentence-transformer model...")
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    model = SentenceTransformer(EMBEDDING_MODEL)
 
-    texts = df["description"].tolist()
+    # Use richer text instead of raw description only
+    texts = [prepare_text(row) for _, row in df.iterrows()]
     print(f"         Embedding {len(texts)} descriptions...")
-    embeddings = model.encode(texts, show_progress_bar=True)
+    print(f"         Sample text: {texts[0][:100]}...")
 
-    # Normalize to unit vectors so dot product = cosine similarity
+    embeddings = model.encode(texts, show_progress_bar=True)
     embeddings = embeddings.astype(np.float32)
     faiss.normalize_L2(embeddings)
 
@@ -34,11 +48,90 @@ def embed_descriptions(df):
 
 # ── Step 3: Build FAISS index ──────────────────────────
 def build_index(embeddings):
-    dim = embeddings.shape[1]
-    index = faiss.IndexFlatIP(dim)  # IP = inner product (cosine sim)
-    index.add(embeddings)
-    print(f"[Step 3] FAISS index built — {index.ntotal} vectors, dim={dim}")
-    return index
+    dim       = embeddings.shape[1]
+    n_vectors = embeddings.shape[0]
+
+    # ── Metric registry ────────────────────────────────
+    # Maps config string → (faiss metric constant, flat index class)
+    # Add new metrics here — no changes needed elsewhere
+    METRIC_REGISTRY = {
+        "ip": (faiss.METRIC_INNER_PRODUCT, faiss.IndexFlatIP),
+        "l2": (faiss.METRIC_L2,            faiss.IndexFlatL2),
+    }
+
+    if FAISS_METRIC not in METRIC_REGISTRY:
+        raise ValueError(
+            f"Unknown FAISS_METRIC: '{FAISS_METRIC}'. "
+            f"Choose from: {list(METRIC_REGISTRY.keys())}"
+        )
+
+    metric_constant, FlatIndexClass = METRIC_REGISTRY[FAISS_METRIC]
+    quantizer  = FlatIndexClass(dim)
+    flat_index = FlatIndexClass(dim)
+
+    print(f"[Step 3] Building index — "
+          f"type={FAISS_INDEX_TYPE}, "
+          f"metric={FAISS_METRIC}, "
+          f"vectors={n_vectors}")
+
+    # ── Safety check ───────────────────────────────────
+    if FAISS_INDEX_TYPE in ("ivf", "ivfpq") and n_vectors < IVF_NLIST:
+        print(f"[Warning] Stale index or data mismatch. "
+              f"Vectors={n_vectors} < nlist={IVF_NLIST}. "
+              f"Falling back to flat. Re-run embeddings.py.")
+        flat_index.add(embeddings)
+        return flat_index
+
+    # ── Index registry ─────────────────────────────────
+    # Each entry is a lambda that builds the right index
+    # given (quantizer, dim, nlist, metric, pq_m)
+    def build_flat(q, d, nlist, metric, pq_m):
+        idx = FlatIndexClass(d)
+        idx.add(embeddings)
+        print(f"[Step 3] Flat — {idx.ntotal} vectors")
+        return idx
+
+    def build_ivf(q, d, nlist, metric, pq_m):
+        idx = faiss.IndexIVFFlat(q, d, nlist, metric)
+        print(f"         Training IVF nlist={nlist}...")
+        idx.train(embeddings)
+        idx.add(embeddings)
+        idx.nprobe = IVF_NPROBE
+        print(f"[Step 3] IVF — {idx.ntotal} vectors, "
+              f"nlist={nlist}, nprobe={IVF_NPROBE}")
+        return idx
+
+    def build_ivfpq(q, d, nlist, metric, pq_m):
+        if d % pq_m != 0:
+            print(f"[Warning] dim={d} not divisible by "
+                  f"PQ_M={pq_m}. Falling back to IVF.")
+            return build_ivf(q, d, nlist, metric, pq_m)
+        idx = faiss.IndexIVFPQ(q, d, nlist, pq_m, 8)
+        print(f"         Training IVF_PQ "
+              f"nlist={nlist}, m={pq_m}...")
+        idx.train(embeddings)
+        idx.add(embeddings)
+        idx.nprobe = IVF_NPROBE
+        print(f"[Step 3] IVF_PQ — {idx.ntotal} vectors, "
+              f"nlist={nlist}, nprobe={IVF_NPROBE}, m={pq_m}")
+        return idx
+
+    INDEX_REGISTRY = {
+        "flat":  build_flat,
+        "ivf":   build_ivf,
+        "ivfpq": build_ivfpq,
+    }
+
+    if FAISS_INDEX_TYPE not in INDEX_REGISTRY:
+        raise ValueError(
+            f"Unknown FAISS_INDEX_TYPE: '{FAISS_INDEX_TYPE}'. "
+            f"Choose from: {list(INDEX_REGISTRY.keys())}"
+        )
+
+    # ── Build ──────────────────────────────────────────
+    builder = INDEX_REGISTRY[FAISS_INDEX_TYPE]
+    return builder(quantizer, dim, IVF_NLIST,
+                   metric_constant, PQ_M)
 
 # ── Save index + metadata ──────────────────────────────
 def save(index, model, df, embeddings):
@@ -95,23 +188,28 @@ def find_similar(query_title, top_k=4, year=None):
             break
     print()
 
-def search_by_description(query_text: str, top_k: int = 4):
+def search_by_description(query_text: str, top_k: int = 4, resources=None):
     """
     Search by raw description text.
     Works for ANY query — movie doesn't need to be in catalog.
-    This is the core of semantic search.
+    Accepts optional resources for dependency injection when called from API.
+    Falls back to loading from disk when called as standalone script.
     """
-    index = faiss.read_index(str(INDEX_PATH))
-    with open(META_PATH, "rb") as f:
-        payload = pickle.load(f)
-    model      = payload["model"]
     all_movies = get_all_movies()
 
-    # Encode the raw query text directly
-    qvec = model.encode([query_text]).astype(np.float32)
-    faiss.normalize_L2(qvec)
-
-    distances, indices = index.search(qvec, top_k)
+    if resources:
+        # called from API — use injected resources, no disk reads
+        qvec = resources.encode(query_text)
+        distances, indices = resources.search(qvec, top_k)
+    else:
+        # called as standalone script — load from disk
+        index = faiss.read_index(str(INDEX_PATH))
+        with open(META_PATH, "rb") as f:
+            payload = pickle.load(f)
+        model = payload["model"]
+        qvec  = model.encode([query_text]).astype(np.float32)
+        faiss.normalize_L2(qvec)
+        distances, indices = index.search(qvec, top_k)
 
     print(f"\nSearch results for: '{query_text}'")
     print("─" * 50)

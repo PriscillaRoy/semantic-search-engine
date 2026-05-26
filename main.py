@@ -12,6 +12,7 @@ from database import get_all_movies, get_movie_by_title, get_movie_count
 from graph import combined_recommend_silent
 from rag import retrieve, build_prompt, generate
 from dependencies import AppResources, get_resources
+from embeddings import search_by_description
 
 # ── App ────────────────────────────────────────────────
 app = FastAPI(
@@ -65,6 +66,7 @@ def get_similar(
     title: str,
     top_k: int = DEFAULT_TOP_K,
     year: int = None,
+    return_all: bool = False,
     resources: AppResources = Depends(get_resources)
 ):
     matches = get_movie_by_title(title, year=year)
@@ -72,21 +74,59 @@ def get_similar(
         raise HTTPException(status_code=404,
                             detail=f"'{title}' not found")
 
-    # Handle duplicates
+    # Multiple matches — three possible behaviors
     if len(matches) > 1 and year is None:
-        return {
-            "error": "multiple_matches",
-            "message": f"Multiple movies found for '{title}'. Specify year.",
-            "matches": [{"title": m["title"], "year": m["year"],
-                         "genre": m["genre"]} for m in matches]
-        }
+        if not return_all:
+            # default — ask for clarification
+            return {
+                "error":   "multiple_matches",
+                "message": f"Multiple matches found for '{title}'. "
+                           f"Add more details or use return_all=true.",
+                "matches": [{"title": m["title"], "year": m["year"],
+                             "genre": m["genre"]} for m in matches]
+            }
+        else:
+            # return_all=true — combine results from all matches
+            all_movies  = get_all_movies()
+            seen_titles = set()
+            combined    = []
 
-    q = matches[0]
+            for match in matches:
+                qvec = resources.encode(match["description"])
+                distances, indices = resources.search(qvec, top_k + 1)
+
+                for dist, idx in zip(distances[0], indices[0]):
+                    m = all_movies[idx]
+                    if m["title"].lower() == title.lower():
+                        continue
+                    if m["title"] not in seen_titles:
+                        seen_titles.add(m["title"])
+                        combined.append({
+                            "title":      m["title"],
+                            "year":       m["year"],
+                            "genre":      m["genre"],
+                            "similarity": round(float(dist), 4),
+                            "matched_from": f"{match['title']} ({match['year']})"
+                        })
+
+            # sort by similarity
+            combined = sorted(combined,
+                              key=lambda x: x["similarity"],
+                              reverse=True)[:top_k]
+
+            return {
+                "query":   title,
+                "note":    f"Combined results from {len(matches)} versions",
+                "results": combined
+            }
+
+    # single match — normal flow
+    q    = matches[0]
     qvec = resources.encode(q["description"])
     distances, indices = resources.search(qvec, top_k + 1)
 
     all_movies = get_all_movies()
-    results = []
+    results    = []
     for dist, idx in zip(distances[0], indices[0]):
         m = all_movies[idx]
         if m["title"].lower() == title.lower():
@@ -210,20 +250,11 @@ def search(
     Search by raw description text.
     No title needed — works for movies not in the catalog.
     """
-    qvec = resources.encode(request.query)
-    distances, indices = resources.search(qvec, request.top_k)
-
-    all_movies = get_all_movies()
-    results = []
-    for dist, idx in zip(distances[0], indices[0]):
-        m = all_movies[idx]
-        results.append({
-            "title":      m["title"],
-            "year":       m["year"],
-            "genre":      m["genre"],
-            "similarity": round(float(dist), 4)
-        })
-
+    results = search_by_description(
+        query_text=request.query,
+        top_k=request.top_k,
+        resources=resources
+    )
     return {"query": request.query, "results": results}
 
 # ── Health check ────────────────────────────────────────
