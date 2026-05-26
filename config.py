@@ -66,3 +66,7 @@ OLLAMA_MODEL = "llama3.2"
 REDIS_HOST  = "localhost"
 REDIS_PORT  = 6379
 REDIS_TTL   = 3600   # cache expiry in seconds (1 hour)
+
+# ── Milvus ─────────────────────────────────────────────
+MILVUS_URI        = "http://localhost:19530"
+MILVUS_COLLECTION = "semantic_search_movies"
