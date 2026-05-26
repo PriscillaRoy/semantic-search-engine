@@ -12,7 +12,8 @@ from database import get_all_movies, get_movie_by_title, get_movie_count
 from graph import combined_recommend_silent
 from rag import retrieve, build_prompt, generate
 from dependencies import AppResources, get_resources
-from embeddings import search_by_description
+from embeddings import search_by_description, prepare_text
+from cache import make_cache_key, get_cached, set_cached, get_cache_stats
 
 # ── App ────────────────────────────────────────────────
 app = FastAPI(
@@ -61,6 +62,7 @@ class SearchRequest(BaseModel):
         return v
 
 # ── Endpoint 1: GET /similar/{title} ───────────────────
+# ── Endpoint 1: GET /similar/{title} ───────────────────
 @app.get("/similar/{title}")
 def get_similar(
     title: str,
@@ -69,58 +71,31 @@ def get_similar(
     return_all: bool = False,
     resources: AppResources = Depends(get_resources)
 ):
+    # ── Cache check ────────────────────────────────────
+    cache_key = make_cache_key("similar", {
+        "title": title, "top_k": top_k,
+        "year": year, "return_all": return_all
+    })
+    cached = get_cached(cache_key)
+    if cached:
+        cached["cached"] = True
+        return cached
+
+    # ── Normal flow ────────────────────────────────────
     matches = get_movie_by_title(title, year=year)
     if not matches:
         raise HTTPException(status_code=404,
                             detail=f"'{title}' not found")
 
-    # Multiple matches — three possible behaviors
-    if len(matches) > 1 and year is None:
-        if not return_all:
-            # default — ask for clarification
-            return {
-                "error":   "multiple_matches",
-                "message": f"Multiple matches found for '{title}'. "
-                           f"Add more details or use return_all=true.",
-                "matches": [{"title": m["title"], "year": m["year"],
-                             "genre": m["genre"]} for m in matches]
-            }
-        else:
-            # return_all=true — combine results from all matches
-            all_movies  = get_all_movies()
-            seen_titles = set()
-            combined    = []
+    if len(matches) > 1 and year is None and not return_all:
+        return {
+            "error":   "multiple_matches",
+            "message": f"Multiple matches for '{title}'. "
+                       f"Add more details or use return_all=true.",
+            "matches": [{"title": m["title"], "year": m["year"],
+                         "genre": m["genre"]} for m in matches]
+        }
 
-            for match in matches:
-                qvec = resources.encode(match["description"])
-                distances, indices = resources.search(qvec, top_k + 1)
-
-                for dist, idx in zip(distances[0], indices[0]):
-                    m = all_movies[idx]
-                    if m["title"].lower() == title.lower():
-                        continue
-                    if m["title"] not in seen_titles:
-                        seen_titles.add(m["title"])
-                        combined.append({
-                            "title":      m["title"],
-                            "year":       m["year"],
-                            "genre":      m["genre"],
-                            "similarity": round(float(dist), 4),
-                            "matched_from": f"{match['title']} ({match['year']})"
-                        })
-
-            # sort by similarity
-            combined = sorted(combined,
-                              key=lambda x: x["similarity"],
-                              reverse=True)[:top_k]
-
-            return {
-                "query":   title,
-                "note":    f"Combined results from {len(matches)} versions",
-                "results": combined
-            }
-
-    # single match — normal flow
     q    = matches[0]
     qvec = resources.encode(q["description"])
     distances, indices = resources.search(qvec, top_k + 1)
@@ -140,7 +115,11 @@ def get_similar(
         if len(results) == top_k:
             break
 
-    return {"query": f"{title} ({q['year']})", "results": results}
+    response = {"query": f"{title} ({q['year']})",
+                "results": results, "cached": False}
+    set_cached(cache_key, response)
+    return response
+
 
 
 # ── Endpoint 2: POST /recommend ─────────────────────────
@@ -149,13 +128,23 @@ def recommend(
     request: RecommendRequest,
     resources: AppResources = Depends(get_resources)
 ):
-    q = get_movie_by_title(request.title)
-    if not q:
+    # ── Cache check ────────────────────────────────────
+    cache_key = make_cache_key("recommend", {
+        "title": request.title, "top_k": request.top_k
+    })
+    cached = get_cached(cache_key)
+    if cached:
+        cached["cached"] = True
+        return cached
+
+    # ── Normal flow ────────────────────────────────────
+    matches = get_movie_by_title(request.title)
+    if not matches:
         raise HTTPException(status_code=404,
                             detail=f"'{request.title}' not found")
 
-    ranked    = combined_recommend_silent(request.title,
-                                         top_k=request.top_k)
+    ranked     = combined_recommend_silent(request.title,
+                                           top_k=request.top_k)
     all_movies = get_all_movies()
     movie_map  = {m["title"]: m for m in all_movies}
 
@@ -170,8 +159,10 @@ def recommend(
                 "score": round(score, 4)
             })
 
-    return {"query": request.title, "results": results}
-
+    response = {"query": request.title,
+                "results": results, "cached": False}
+    set_cached(cache_key, response)
+    return response
 
 # ── Endpoint 3: POST /explain ───────────────────────────
 @app.post("/explain")
@@ -208,7 +199,7 @@ def evaluate(
         query_title = query["title"]
         query_genre = query["genre"]
 
-        qvec = resources.encode(query["description"])
+        qvec = resources.encode(prepare_text(query))
         distances, indices = resources.search(qvec, top_k + 1)
 
         relevant = 0
@@ -246,16 +237,25 @@ def search(
     request: SearchRequest,
     resources: AppResources = Depends(get_resources)
 ):
-    """
-    Search by raw description text.
-    No title needed — works for movies not in the catalog.
-    """
-    results = search_by_description(
+    # ── Cache check ────────────────────────────────────
+    cache_key = make_cache_key("search", {
+        "query": request.query, "top_k": request.top_k
+    })
+    cached = get_cached(cache_key)
+    if cached:
+        cached["cached"] = True
+        return cached
+
+    # ── Normal flow ────────────────────────────────────
+    results  = search_by_description(
         query_text=request.query,
         top_k=request.top_k,
         resources=resources
     )
-    return {"query": request.query, "results": results}
+    response = {"query": request.query,
+                "results": results, "cached": False}
+    set_cached(cache_key, response)
+    return response
 
 # ── Health check ────────────────────────────────────────
 @app.get("/health")
@@ -265,3 +265,14 @@ def health(resources: AppResources = Depends(get_resources)):
         "model":      "llama3.2",
         "index_size": resources.index.ntotal
     }
+# ── Cache stats ─────────────────────────────────────────
+@app.get("/cache/stats")
+def cache_stats():
+    return get_cache_stats()
+
+# ── Cache invalidation ──────────────────────────────────
+@app.delete("/cache/clear")
+def clear_cache():
+    from cache import invalidate_cache
+    count = invalidate_cache()
+    return {"message": f"Cleared {count} cached keys"}
