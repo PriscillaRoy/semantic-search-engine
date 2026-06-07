@@ -18,6 +18,7 @@ from sentence_transformers import SentenceTransformer
 from database import get_all_movies, get_movie_by_title
 from config import (MILVUS_URI, MILVUS_COLLECTION,
                     EMBEDDING_DIM, EMBEDDING_MODEL)
+from functools import lru_cache
 
 
 # ── Collection schema ──────────────────────────────────
@@ -80,6 +81,12 @@ def get_client() -> MilvusClient:
     """Returns a connected MilvusClient."""
     return MilvusClient(uri=MILVUS_URI)
 
+@lru_cache(maxsize=1)
+def get_model():
+    """Load model once, reuse forever."""
+    print("[Milvus] Loading embedding model...")
+    return SentenceTransformer(EMBEDDING_MODEL)
+
 
 # ── Create collection ──────────────────────────────────
 def create_collection(drop_existing: bool = False):
@@ -116,7 +123,7 @@ def build_milvus_index():
     One-time setup — after this use upsert() for updates.
     """
     client = create_collection(drop_existing=True)
-    model  = SentenceTransformer(EMBEDDING_MODEL)
+    model  = get_model()
 
     movies = get_all_movies()
     print(f"[Milvus] Embedding {len(movies)} movies...")
@@ -158,7 +165,7 @@ def upsert_movie(movie: dict):
     This is the streaming update FAISS can't do.
     """
     client = get_client()
-    model  = SentenceTransformer(EMBEDDING_MODEL)
+    model  = get_model()
 
     from embeddings import prepare_text
     text      = prepare_text(movie)
@@ -185,7 +192,7 @@ def milvus_search(query_text: str, top_k: int = 4) -> list:
     Drop-in replacement for FAISS search in embeddings.py.
     """
     client = get_client()
-    model  = SentenceTransformer(EMBEDDING_MODEL)
+    model  = get_model()
 
     qvec = model.encode([query_text]).astype(np.float32)
     faiss.normalize_L2(qvec)

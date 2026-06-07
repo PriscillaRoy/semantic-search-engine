@@ -70,3 +70,7 @@ REDIS_TTL   = 3600   # cache expiry in seconds (1 hour)
 # ── Milvus ─────────────────────────────────────────────
 MILVUS_URI        = "http://localhost:19530"
 MILVUS_COLLECTION = "semantic_search_movies"
+# ── Search backend ─────────────────────────────────────
+# "faiss"  → use local FAISS index (default)
+# "milvus" → use Milvus for real-time updates
+SEARCH_BACKEND = "faiss"   # "milvus" / "faiss"

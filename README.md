@@ -149,3 +149,8 @@ semantic-search-engine/
     ├── embeddings.npy
     └── movies_graph.pkl
 ```
+
+
+## Architecture
+
+![Architecture](semantic_search_engine_architecture.svg)

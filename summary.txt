@@ -1,0 +1,112 @@
+Step 1 — config.py
+  All hardcoded values in one place:
+  paths, model names, index params, API limits
+  Dynamic IVF_NLIST = max(4, sqrt(n_movies))
+  Dynamic MAX_TOP_K = movie_count - 1
+
+Step 2 — database.py (SQLite replacing pickle)
+  init_db()              → creates movies table from CSV
+  get_all_movies()       → SELECT * FROM movies
+  get_movie_by_title()   → case-insensitive, optional year filter
+                           returns LIST not single dict
+  get_movies_by_ids()    → batch fetch by FAISS indices
+  get_movie_count()      → for dynamic validator
+  search_by_description_text() → SQL LIKE fallback search
+  get_duplicate_titles() → finds same-title movies
+
+Step 3 — Pydantic validators
+  top_k validated against get_movie_count() - 1
+  Dynamic — auto-adjusts as dataset grows
+  Returns 422 with clear message on violation
+
+Step 4 — Dependency injection
+  dependencies.py:
+    AppResources class   → holds index + model
+    encode()             → encode + normalize in one call
+    search()             → wraps index.search()
+  get_resources()        → lru_cache singleton
+  Replaces globals       → testable, thread-safe, explicit
+
+Step 5 — search_by_description()
+  Optional resources param → injected from API
+  Falls back to disk load  → when run as script
+  top_k not top_k+1       → query not in index
+
+Step 6 — Duplicate title handling
+  get_movie_by_title() returns list
+  API returns disambiguation response
+  return_all=true flag   → combines results from all versions
+  year= query param      → targets specific version
+
+Step 7 — IndexIVFFlat + registry pattern
+  METRIC_REGISTRY        → maps "ip"/"l2" to FAISS constants
+  INDEX_REGISTRY         → maps "flat"/"ivf"/"ivfpq" to builders
+  Adding new metric/type → one line in registry, zero logic changes
+  Safety check           → falls back to flat if n < nlist
+  prepare_text()         → genre + year prefix improves precision
+                           precision@4: 0.17 → 0.39
+
+Step 8 — Redis caching
+  cache.py:
+    get_redis_client()   → lru_cache singleton, graceful degradation
+    make_cache_key()     → MD5 hash of endpoint + sorted params
+                           cde: namespace prefix
+    get_cached()         → retrieves + refreshes TTL on hit
+    set_cached()         → stores with TTL expiry
+    invalidate_cache()   → pattern-based bulk delete
+    get_cache_stats()    → hits/misses/ratio/memory
+  TTL refresh on access  → popular keys never expire
+  cached: true/false     → visible in every response
+
+Step 9 — Gunicorn
+  gunicorn_config.py:
+    workers = os.getenv("GUNICORN_WORKERS", 2)
+    worker_class = UvicornWorker (async, not sync)
+    timeout = 120
+    lifecycle hooks      → on_starting, worker_exit
+  start.sh:
+    ./start.sh dev       → uvicorn --reload
+    ./start.sh local     → gunicorn 2 workers
+    GUNICORN_WORKERS=25  → override via env var
+  Load test: 20 concurrent requests
+    → all cached: true
+    → hit_ratio: 0.871
+
+Step 10 — (pending) Embedding model benchmark
+  Compare all-MiniLM-L6-v2 vs all-mpnet-base-v2
+  vs text-embedding-ada-002
+
+Step 11 — Milvus streaming index (just completed)
+  milvus_store.py:
+    MilvusClient         → modern API (not ORM-style)
+    IVF_FLAT + IP metric → same as FAISS index type
+    build_milvus_index() → embeds all movies, batch insert
+    upsert_movie()       → real-time single movie update
+                           no rebuild needed ← key advantage
+    milvus_search()      → semantic search via Milvus
+    collection_info()    → mirrors /milvus/info from work project
+  Docker Compose:
+    milvus-standalone + etcd + MinIO
+    same pattern 
+
+
+
+Request: POST /recommend {"title": "Inception"}
+         ↓
+Redis cache check (2ms if hit)
+         ↓ miss
+AppResources (lru_cache singleton)
+  → FAISS IVF index
+  → sentence-transformer model
+         ↓
+embeddings.py: encode + normalize query
+         ↓
+FAISS IVF search → top-k by cosine similarity
+         ↓
+graph.py: two-hop genre traversal + similarity edges
+         ↓
+combined scoring: (faiss + graph) / 2
+         ↓
+Redis cache store (TTL refresh)
+         ↓
+Response: ranked recommendations + cached: false

@@ -7,13 +7,14 @@ from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, field_validator
 
 from config import (INDEX_PATH, META_PATH,
-                    DEFAULT_TOP_K, MAX_TOP_K, MIN_TOP_K)
+                    DEFAULT_TOP_K, MAX_TOP_K, MIN_TOP_K, SEARCH_BACKEND)
 from database import get_all_movies, get_movie_by_title, get_movie_count
 from graph import combined_recommend_silent
 from rag import retrieve, build_prompt, generate
 from dependencies import AppResources, get_resources
 from embeddings import search_by_description, prepare_text
 from cache import make_cache_key, get_cached, set_cached, get_cache_stats
+from milvus_store import milvus_search, upsert_movie
 
 # ── App ────────────────────────────────────────────────
 app = FastAPI(
@@ -22,8 +23,8 @@ app = FastAPI(
     version="1.0.0"
 )
 
-
 # ── Request models ─────────────────────────────────────
+
 class RecommendRequest(BaseModel):
     title: str
     top_k: int = DEFAULT_TOP_K
@@ -61,7 +62,6 @@ class SearchRequest(BaseModel):
             raise ValueError(f"top_k must be between {MIN_TOP_K} and {max_allowed}")
         return v
 
-# ── Endpoint 1: GET /similar/{title} ───────────────────
 # ── Endpoint 1: GET /similar/{title} ───────────────────
 @app.get("/similar/{title}")
 def get_similar(
@@ -237,25 +237,66 @@ def search(
     request: SearchRequest,
     resources: AppResources = Depends(get_resources)
 ):
-    # ── Cache check ────────────────────────────────────
+    """
+    Search by description text.
+    Backend controlled by SEARCH_BACKEND in config.py:
+      "faiss"  → local FAISS index
+      "milvus" → Milvus vector database
+    """
     cache_key = make_cache_key("search", {
-        "query": request.query, "top_k": request.top_k
+        "query":   request.query,
+        "top_k":   request.top_k,
+        "backend": SEARCH_BACKEND    # ← cache is backend-aware
     })
     cached = get_cached(cache_key)
     if cached:
         cached["cached"] = True
         return cached
 
-    # ── Normal flow ────────────────────────────────────
-    results  = search_by_description(
-        query_text=request.query,
-        top_k=request.top_k,
-        resources=resources
-    )
-    response = {"query": request.query,
-                "results": results, "cached": False}
+    if SEARCH_BACKEND == "milvus":
+        results = milvus_search(request.query, top_k=request.top_k)
+    else:
+        results = search_by_description(
+            query_text=request.query,
+            top_k=request.top_k,
+            resources=resources
+        )
+
+    response = {
+        "query":   request.query,
+        "backend": SEARCH_BACKEND,
+        "results": results,
+        "cached":  False
+    }
     set_cached(cache_key, response)
     return response
+
+class UpsertRequest(BaseModel):
+    id:          int
+    title:       str
+    year:        int
+    genre:       str
+    description: str
+
+# ── Endpoint 7: POST /milvus/upsert ────────────────────
+@app.post("/milvus/upsert")
+def upsert(request: UpsertRequest):
+    """
+    Add or update a movie in Milvus in real-time.
+    No index rebuild needed — available for search instantly.
+    This is the key advantage over FAISS.
+    """
+    upsert_movie(request.dict())
+
+    # invalidate cache so stale results aren't served
+    from cache import invalidate_cache
+    invalidate_cache("cde:search_milvus:*")
+
+    return {
+        "status":  "upserted",
+        "title":   request.title,
+        "message": "Available for search immediately"
+    }
 
 # ── Health check ────────────────────────────────────────
 @app.get("/health")
@@ -263,7 +304,8 @@ def health(resources: AppResources = Depends(get_resources)):
     return {
         "status":     "ok",
         "model":      "llama3.2",
-        "index_size": resources.index.ntotal
+        "index_size": resources.index.ntotal,
+        "search_backend": SEARCH_BACKEND
     }
 # ── Cache stats ─────────────────────────────────────────
 @app.get("/cache/stats")
