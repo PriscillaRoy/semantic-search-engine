@@ -2,7 +2,7 @@ import redis
 import json
 import hashlib
 from functools import lru_cache
-from config import REDIS_HOST, REDIS_PORT, REDIS_TTL
+from config import REDIS_HOST, REDIS_PORT, REDIS_TTL, REDIS_DB_CACHE
 
 
 @lru_cache(maxsize=1)
@@ -15,6 +15,7 @@ def get_redis_client():
         client = redis.Redis(
             host=REDIS_HOST,
             port=REDIS_PORT,
+            db=REDIS_DB_CACHE,
             decode_responses=True,
             socket_connect_timeout=2
         )
@@ -24,7 +25,6 @@ def get_redis_client():
     except Exception:
         print("[Cache] Redis unavailable — caching disabled")
         return None
-
 
 def make_cache_key(endpoint: str, params: dict) -> str:
     """

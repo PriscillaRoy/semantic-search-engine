@@ -110,3 +110,135 @@ combined scoring: (faiss + graph) / 2
 Redis cache store (TTL refresh)
          ↓
 Response: ranked recommendations + cached: false
+
+Conceptual — what/why:
+"What is a feature store and why do you need one?"
+→ centralized repository for ML features
+  eliminates training-serving skew
+  features computed once, reused everywhere
+  offline store for training, online for serving
+
+"What is training-serving skew?"
+→ when features computed differently at training time
+  vs serving time → model performs worse in prod
+  feature store solves this by using same pipeline
+
+"What's the difference between offline and online store?"
+→ offline: historical data for training (parquet/S3)
+  online: low-latency serving for predictions (Redis)
+  same features, different storage for different use cases
+
+"Why do you need point-in-time correct features?"
+→ prevents data leakage in training
+  if you query features as of today for a training
+  example from last year, you'd include future data
+  Feast handles this automatically via event_timestamp
+
+"What is feature materialization?"
+→ moving features from offline → online store
+  batch process, typically run on a schedule
+  incremental materialization only moves new data
+
+Design — how:
+"How would you design a feature store for a 
+ recommendation system at Netflix scale?"
+→ offline: S3 + Spark for batch computation
+  online: Redis cluster for sub-ms serving
+  streaming: Kafka → Flink → online store
+           for real-time user behavior features
+  registry: centralized schema + lineage tracking
+  
+"How do you handle feature freshness?"
+→ TTL on online store (we use 3600s)
+  incremental materialization on schedule
+  streaming features for real-time signals
+  different TTLs for different feature types:
+    user behavior → short TTL (minutes)
+    item features → long TTL (days)
+
+"What's the difference between batch and 
+ streaming features?"
+→ batch: computed in bulk on a schedule
+         watch_count_30d, avg_rating
+         tolerate some staleness
+  streaming: computed in real-time from events
+             watch_count_last_5min, current_session
+             must be fresh for good recommendations
+
+"How would you handle a new movie with no features?"
+→ cold start problem
+  fallback to genre-average features
+  or use content-based features (embedding)
+  gradually update as data accumulates
+
+
+Debugging — what went wrong:
+"Walk me through a time you debugged a 
+ data pipeline issue"
+→ perfect STAR story here:
+  Situation: Feast materializing 0 rows
+  Task: diagnose why features weren't in Redis
+  Action: checked timestamps, found window mismatch,
+          found Redis port conflict, found version
+          incompatibility with pymilvus
+  Result: features successfully materialized,
+          separated Redis instances by port,
+          used explicit time window for backfill
+
+
+System design — tradeoffs:
+"Why Feast over building your own feature store?"
+→ point-in-time correctness is hard to get right
+  offline/online consistency is non-trivial
+  registry + lineage tracking out of the box
+  industry standard → team already knows it
+
+"When would you NOT use a feature store?"
+→ small dataset, simple features
+  no training-serving skew risk
+  single model, no feature reuse
+  overhead not worth it
+
+"How do you handle feature versioning?"
+→ Feast registry tracks schema changes
+  new feature view version for breaking changes
+  backward compatible changes → same view
+  critical for reproducible training runs
+
+Your specific implementation talking points:
+"I built a two-tier feature store:
+  offline: parquet files (S3-ready, one config change)
+  online:  dedicated Redis instance on port 6380
+           separated from app cache on 6379
+           prevents cache pollution and independent scaling
+
+  Features include both item-level (content signals)
+  and simulated user-level (behavior signals)
+  
+  Materialization uses explicit time windows for
+  backfills and incremental for production updates
+  
+  Feast registry tracks all feature definitions —
+  same schema used for training and serving
+  eliminates training-serving skew"
+
+
+
+  After adding Feature Store 
+  Query: "Inception" for user_002 (Horror fan)
+         ↓
+FAISS + Graph retrieval (semantic similarity)
+         ↓
+Feast feature lookup per candidate (sub-ms Redis)
+         ↓
+Feast user feature lookup (preferred_genre=Horror)
+         ↓
+Re-ranking formula:
+  base_score    × 0.50  ← semantic relevance
+  popularity    × 0.15  ← content quality signal
+  avg_rating    × 0.15  ← crowd wisdom
+  genre_match   × 0.10  ← personalization signal
+  completion    × 0.05  ← user engagement pattern
+  activity      × 0.05  ← user activity level
+         ↓
+Final ranked results

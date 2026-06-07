@@ -68,6 +68,8 @@ OLLAMA_MODEL = "llama3.2"
 REDIS_HOST  = "localhost"
 REDIS_PORT  = 6379
 REDIS_TTL   = 3600   # cache expiry in seconds (1 hour)
+REDIS_DB_CACHE = 0    # our app cache
+REDIS_DB_FEAST = 1    # Feast feature store
 
 # ── Milvus ─────────────────────────────────────────────
 MILVUS_URI        = "http://localhost:19530"
