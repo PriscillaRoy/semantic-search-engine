@@ -32,8 +32,8 @@ FAISS_METRIC = "ip"
 def get_optimal_nlist() -> int:
     """
     Dynamically compute nlist based on current dataset size.
-    Rule: nlist = max(4, sqrt(n))
-    Minimum 4 — IVF needs at least nlist vectors to train.
+    FAISS requires at least nlist * 39 training points.
+    So nlist <= n // 39. Also minimum 4.
     """
     try:
         conn = sqlite3.connect(str(DB_PATH))
@@ -41,7 +41,9 @@ def get_optimal_nlist() -> int:
         cursor.execute("SELECT COUNT(*) FROM movies")
         n = cursor.fetchone()[0]
         conn.close()
-        return max(4, int(math.sqrt(n)))
+        max_safe = max(4, n // 39)          # FAISS constraint
+        natural  = max(4, int(math.sqrt(n))) # ideal clustering
+        return min(max_safe, natural)        # take the safer one
     except:
         return 4
 

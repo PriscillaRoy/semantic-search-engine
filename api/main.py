@@ -8,13 +8,13 @@ from pydantic import BaseModel, field_validator
 
 from config import (INDEX_PATH, META_PATH,
                     DEFAULT_TOP_K, MAX_TOP_K, MIN_TOP_K, SEARCH_BACKEND)
-from database import get_all_movies, get_movie_by_title, get_movie_count
-from graph import combined_recommend_silent
-from rag import retrieve, build_prompt, generate
-from dependencies import AppResources, get_resources
-from embeddings import search_by_description, prepare_text
-from cache import make_cache_key, get_cached, set_cached, get_cache_stats
-from milvus_store import milvus_search, upsert_movie
+from store.database import get_all_movies, get_movie_by_title, get_movie_count
+from core.graph import combined_recommend_silent
+from core.rag import retrieve, build_prompt, generate
+from api.dependencies import AppResources, get_resources
+from core.embeddings import search_by_description, prepare_text
+from store.cache import make_cache_key, get_cached, set_cached, get_cache_stats
+from core.milvus_store import milvus_search, upsert_movie
 
 # ── App ────────────────────────────────────────────────
 app = FastAPI(
@@ -289,7 +289,7 @@ def upsert(request: UpsertRequest):
     upsert_movie(request.dict())
 
     # invalidate cache so stale results aren't served
-    from cache import invalidate_cache
+    from store.cache import invalidate_cache
     invalidate_cache("cde:search_milvus:*")
 
     return {
@@ -315,6 +315,6 @@ def cache_stats():
 # ── Cache invalidation ──────────────────────────────────
 @app.delete("/cache/clear")
 def clear_cache():
-    from cache import invalidate_cache
+    from store.cache import invalidate_cache
     count = invalidate_cache()
     return {"message": f"Cleared {count} cached keys"}

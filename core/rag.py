@@ -6,8 +6,8 @@ import pickle
 import numpy as np
 import ollama
 from pathlib import Path
-from graph import combined_recommend_silent
-from database import get_movie_by_title, get_all_movies
+from core.graph import combined_recommend_silent
+from store.database import get_movie_by_title, get_all_movies
 from config import (DATA_PATH, INDEX_PATH, META_PATH,
                     GRAPH_PATH, OLLAMA_MODEL)
 

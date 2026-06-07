@@ -7,7 +7,7 @@ import pickle
 import faiss
 import numpy as np
 from pathlib import Path
-from database import get_all_movies, get_movie_by_title
+from store.database import get_all_movies, get_movie_by_title
 from config import (DATA_PATH, INDEX_PATH, META_PATH,
                     GRAPH_PATH, EMB_PATH,
                     SIMILARITY_THRESHOLD, OLLAMA_MODEL)

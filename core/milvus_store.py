@@ -15,7 +15,7 @@ import numpy as np
 import faiss
 from pymilvus import MilvusClient, DataType
 from sentence_transformers import SentenceTransformer
-from database import get_all_movies, get_movie_by_title
+from store.database import get_all_movies, get_movie_by_title
 from config import (MILVUS_URI, MILVUS_COLLECTION,
                     EMBEDDING_DIM, EMBEDDING_MODEL)
 from functools import lru_cache
@@ -129,7 +129,7 @@ def build_milvus_index():
     print(f"[Milvus] Embedding {len(movies)} movies...")
 
     # prepare text — same as embeddings.py prepare_text()
-    from embeddings import prepare_text
+    from core.embeddings import prepare_text
     texts      = [prepare_text(m) for m in movies]
     embeddings = model.encode(texts, show_progress_bar=True)
     embeddings = embeddings.astype(np.float32)
@@ -167,7 +167,7 @@ def upsert_movie(movie: dict):
     client = get_client()
     model  = get_model()
 
-    from embeddings import prepare_text
+    from core.embeddings import prepare_text
     text      = prepare_text(movie)
     embedding = model.encode([text]).astype(np.float32)
     faiss.normalize_L2(embedding)

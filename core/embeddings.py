@@ -4,7 +4,7 @@ import faiss
 import pickle
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
-from database import init_db, get_all_movies, get_movie_by_title
+from store.database import init_db, get_all_movies, get_movie_by_title
 
 # ── Paths ──────────────────────────────────────────────
 from config import (DATA_PATH, INDEX_PATH, META_PATH, EMB_PATH, EMBEDDING_MODEL,
