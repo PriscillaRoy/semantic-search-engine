@@ -154,3 +154,4 @@ semantic-search-engine/
 ## Architecture
 
 ![Architecture](semantic_search_engine_architecture.svg)
+

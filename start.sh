@@ -7,12 +7,13 @@ MODE=${1:-dev}
 echo "Starting Semantic Search Engine in $MODE mode..."
 
 if [ "$MODE" = "local" ]; then
+    OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \
     # Production — Gunicorn with multiple workers
     gunicorn api.main:app --config gunicorn_config.py
 else
     # Development — single Uvicorn worker with auto-reload
     uvicorn api.main:app \
         --host 0.0.0.0 \
-        --port 8000 \
+        --port 8003 \
         --reload
 fi

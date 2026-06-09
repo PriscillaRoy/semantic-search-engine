@@ -2,6 +2,10 @@
 import multiprocessing
 import os
 
+multiprocessing.set_start_method("spawn", force=True)
+# add preload_app to load model before forking
+preload_app = True
+
 # ── Server socket ──────────────────────────────────────
 bind             = "0.0.0.0:8000"
 backlog          = 2048

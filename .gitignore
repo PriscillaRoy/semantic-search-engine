@@ -14,3 +14,5 @@ indexes/
 # Logs
 logs/
 milvus-compose.yml
+
+.env

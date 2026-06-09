@@ -4,7 +4,9 @@ import faiss
 import pickle
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
-from store.database import init_db, get_all_movies, get_movie_by_title
+from store.database import get_all_movies, get_movie_by_title
+from store.database_sqlite import init_db
+from config import DB_BACKEND
 
 # ── Paths ──────────────────────────────────────────────
 from config import (DATA_PATH, INDEX_PATH, META_PATH, EMB_PATH, EMBEDDING_MODEL,
@@ -145,7 +147,8 @@ def save(index, model, df, embeddings):
         pickle.dump({"model": model}, f)
 
     # Initialize SQLite with movie data
-    init_db()
+    if DB_BACKEND == "sqlite":
+        init_db()
     
     print(f"[Save] Index, embeddings, model and database saved\n")
 
