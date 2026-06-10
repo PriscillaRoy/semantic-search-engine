@@ -2,29 +2,48 @@ import redis
 import json
 import hashlib
 from functools import lru_cache
-from config import REDIS_HOST, REDIS_PORT, REDIS_TTL, REDIS_DB_CACHE
+from config import REDIS_HOST, REDIS_PORT, REDIS_TTL, REDIS_DB_CACHE, REDIS_URL
 
 
 @lru_cache(maxsize=1)
 def get_redis_client():
     """
     Singleton Redis client — created once, reused forever.
+
+    Connection priority:
+        1. REDIS_URL set → Upstash (production)
+        2. REDIS_URL not set → local Redis via host/port (dev)
+
     Returns None if Redis unavailable — graceful degradation.
+    App works without cache, just slower.
     """
     try:
-        client = redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            db=REDIS_DB_CACHE,
-            decode_responses=True,
-            socket_connect_timeout=2
-        )
-        client.ping()
-        print("[Cache] Redis connected")
+        if REDIS_URL:
+            # Upstash — TLS connection via URL
+            # decode_responses=True so we get strings not bytes
+            client = redis.from_url(
+                REDIS_URL,
+                decode_responses=True,
+                socket_connect_timeout=2
+            )
+            client.ping()
+            print("[Cache] Upstash Redis connected")
+        else:
+            # Local Redis — host/port connection
+            client = redis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                db=REDIS_DB_CACHE,
+                decode_responses=True,
+                socket_connect_timeout=2
+            )
+            client.ping()
+            print("[Cache] Local Redis connected")
         return client
     except Exception:
         print("[Cache] Redis unavailable — caching disabled")
         return None
+
 
 def make_cache_key(endpoint: str, params: dict) -> str:
     """
@@ -102,6 +121,7 @@ def get_cache_stats() -> dict:
         keys = client.keys("cde:*")
         return {
             "status":      "connected",
+            "backend":     "upstash" if REDIS_URL else "local",
             "cached_keys": len(keys),
             "hits":        info.get("keyspace_hits", 0),
             "misses":      info.get("keyspace_misses", 0),

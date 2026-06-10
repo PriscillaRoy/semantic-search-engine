@@ -242,3 +242,102 @@ Re-ranking formula:
   activity      × 0.05  ← user activity level
          ↓
 Final ranked results
+
+
+
+-----
+
+My notes :
+For Github :
+This is a permissions issue — git is using your work GitHub account (`pimand209_comcast`) instead of your personal one (`PriscillaRoy`). Here's how to fix it:
+
+---
+
+**Check which account git is using**
+
+```bash
+git config --list | grep user
+```
+
+You'll likely see your work email. Also check:
+
+```bash
+git credential-manager get
+# or
+cat ~/.gitconfig
+```
+
+---
+
+**Fix: set credentials just for this repo**
+
+The cleanest approach — override the account for this project only without touching your work setup:
+
+```bash
+# Inside content-discovery/
+git config user.name "PriscillaRoy"
+git config user.email "your-personal-email@gmail.com"
+```
+
+Then update the remote URL to include your personal username:
+
+```bash
+git remote set-url origin https://PriscillaRoy@github.com/PriscillaRoy/content-discovery-engine.git
+```
+
+Then push again:
+
+```bash
+git push -u origin main
+```
+
+It should prompt you for a password — **don't use your GitHub password here**, GitHub requires a Personal Access Token (PAT).
+
+---
+
+**If it asks for a password — use a PAT**
+
+1. Go to [github.com/settings/tokens](https://github.com/settings/tokens)
+2. Click **Generate new token (classic)**
+3. Give it a name like `content-discovery-mac`
+4. Check the **`repo`** scope
+5. Click Generate — copy the token immediately
+6. Paste it as the password when git prompts you
+
+---
+
+Try the `git remote set-url` step first and let me know what happens.
+
+
+No, Option 1 is completely safe for work. Here's why:
+
+The URL change is **local to this one repo only** — it only lives in `content-discovery/.git/config`. It doesn't touch:
+
+- Your global `~/.gitconfig`
+- Your work credentials or SSH keys
+- Any other repo on your machine
+
+Think of it like a sticky note on one specific folder — nothing else sees it.
+
+And once you run the cleanup step:
+```bash
+git remote set-url origin https://github.com/PriscillaRoy/content-discovery-engine.git
+```
+Even that sticky note is gone. Your work repos never knew anything happened.
+
+---
+
+**Go ahead with this sequence:**
+
+1. Generate your PAT at [github.com/settings/tokens](https://github.com/settings/tokens) (check `repo` scope)
+2. Run:
+```bash
+git remote set-url origin https://PriscillaRoy:YOUR_PAT_HERE@github.com/PriscillaRoy/content-discovery-engine.git
+git push -u origin main
+```
+3. Then immediately clean it up:
+```bash
+git remote set-url origin https://github.com/PriscillaRoy/content-discovery-engine.git
+```
+
+That's it — one push, work is untouched. Let me know when you have the PAT ready.

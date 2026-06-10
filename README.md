@@ -1,24 +1,31 @@
-# Semantic Search Engine
+# Content Discovery Engine
 
-Embedding-based semantic search and movie recommendations using FAISS + Graph + RAG,
-with production-grade serving via Gunicorn, Redis caching, and Milvus vector database.
+Embedding-based semantic search and personalized movie recommendations using FAISS + Graph + RAG,
+with production-grade serving via Gunicorn, Redis caching, Milvus vector database, Feast feature store,
+and Supabase PostgreSQL + Auth.
 
-**Stack:** Python · FAISS · Milvus · sentence-transformers · NetworkX · FastAPI · Redis · Ollama
+**Stack:** Python · FastAPI · FAISS · Milvus · sentence-transformers · NetworkX · Redis · Feast · Supabase · Ollama
 
 ---
 
-## TODO
-- [x] Embeddings + FAISS index
-- [x] Graph layer (NetworkX)
-- [x] RAG layer (Ollama)
-- [x] FastAPI + precision@k evaluation
-- [x] Production optimization, simulation + load testing
+## Progress
+
+- [x] Session 1 — Embeddings + FAISS index
+- [x] Session 2 — Graph layer (NetworkX)
+- [x] Session 3 — RAG layer (Ollama)
+- [x] Session 4 — FastAPI + precision@k evaluation
+- [x] Session 5 — Production optimization (Redis, Gunicorn, Milvus)
+- [x] Session 6 — Feature store (Feast) + personalized recommendations
+- [x] Session 7 — Cloud migration (Supabase PostgreSQL + Auth, modular API)
+- [ ] Session 8 — Upstash Redis + Zilliz Cloud + backend deployment
+- [ ] Session 9 — React/Next.js frontend on Vercel
+- [ ] Session 10 — Internet Archive integration + watch history pipeline
 
 ---
 
 ## Prerequisites
 
-Before running the project, start these three services:
+Before running the project, start these services:
 
 ### 1. Ollama (local LLM for RAG explanations)
 ```bash
@@ -27,11 +34,12 @@ brew services start ollama
 ollama pull llama3.2
 ```
 
-### 2. Redis (caching layer)
+### 2. Redis (caching layer — two instances)
 ```bash
 brew install redis
-brew services start redis
-redis-cli ping   # should return PONG
+brew services start redis                            # port 6379 — app cache
+redis-server --port 6380 --daemonize yes            # port 6380 — Feast online store
+redis-cli ping                                       # should return PONG
 ```
 
 ### 3. Milvus (vector database for streaming index)
@@ -66,6 +74,32 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Environment variables
+
+Create a `.env` file in the project root:
+
+```bash
+# Database backend: "sqlite" (local) or "supabase" (production)
+DB_BACKEND=sqlite
+
+# Supabase (required for DB_BACKEND=supabase)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-publishable-key
+SUPABASE_DB_URL=postgresql://postgres:your-encoded-password@db.your-project.supabase.co:5432/postgres
+
+# Redis (optional — defaults to localhost:6379)
+# REDIS_URL=rediss://your-upstash-url   # Upstash in production
+
+# Milvus (optional — defaults to localhost:19530)
+# MILVUS_URI=https://your-zilliz-endpoint
+# MILVUS_TOKEN=your-zilliz-token
+
+# Search backend: "faiss" (default) or "milvus"
+SEARCH_BACKEND=faiss
+```
+
+> ⚠️ Never commit `.env` to Git. It's in `.gitignore`.
+
 ---
 
 ## Build the indexes
@@ -73,8 +107,23 @@ pip install -r requirements.txt
 Run these in order — each step depends on the previous:
 
 ```bash
-python3 embeddings.py    # Step 1: embed descriptions + build FAISS index
-python3 graph.py         # Step 2: build NetworkX graph
+python3 -m core.embeddings    # embed descriptions + build FAISS index
+python3 -m core.graph         # build NetworkX graph
+```
+
+### Supabase migration (first time only)
+
+```bash
+python3 -m store.migrate      # creates tables + seeds 101 movies into Supabase
+```
+
+### Feast feature store
+
+```bash
+# Materialize features into Redis online store
+cd store/feature_repo
+feast materialize 2024-01-01T00:00:00 $(date -u +"%Y-%m-%dT%H:%M:%S")
+cd ../..
 ```
 
 ---
@@ -85,8 +134,8 @@ python3 graph.py         # Step 2: build NetworkX graph
 # Development (single worker, auto-reload)
 ./start.sh dev
 
-# Local simulation (2 Gunicorn workers)
-./start.sh local
+# Local simulation (2 Gunicorn workers — Mac Apple Silicon fix included)
+OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES ./start.sh local
 
 # Production (full workers based on CPU count)
 GUNICORN_WORKERS=25 ./start.sh local
@@ -96,31 +145,53 @@ GUNICORN_WORKERS=25 ./start.sh local
 
 ## API Endpoints
 
+### Auth
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Health check |
+| POST | `/auth/signup` | Create a new user account |
+| POST | `/auth/signin` | Sign in — returns JWT access token |
+| POST | `/auth/signout` | Invalidate JWT |
+| GET | `/auth/me` | Return current authenticated user |
+
+### Movies
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/similar/{title}` | FAISS similarity search |
 | POST | `/recommend` | Combined FAISS + Graph recommendations |
 | POST | `/explain` | Full RAG pipeline with LLM explanation |
-| POST | `/search` | Search by description (no title needed) |
+| POST | `/search` | Search by description (FAISS or Milvus backend) |
+
+### Features
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/features/{movie_id}` | Feast online feature lookup |
+| POST | `/recommend/personalized` | Two-tower personalized recommendations |
+
+### Admin
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check |
 | GET | `/evaluate` | precision@k evaluation |
 | GET | `/cache/stats` | Redis cache statistics |
 | DELETE | `/cache/clear` | Invalidate all cached results |
+| POST | `/milvus/upsert` | Real-time movie upsert into Milvus |
 
-Interactive API docs: http://127.0.0.1:8000/docs
+Interactive API docs: `http://localhost:8000/docs`
 
 ---
 
 ## Configuration
 
-All settings in `config.py`:
+All settings in `config.py`. Override any value via `.env`:
 
 ```python
-FAISS_INDEX_TYPE = "ivf"    # flat | ivf | ivfpq
-FAISS_METRIC     = "ip"     # ip | l2
+FAISS_INDEX_TYPE = "ivf"            # flat | ivf | ivfpq
+FAISS_METRIC     = "ip"             # ip | l2
 EMBEDDING_MODEL  = "all-MiniLM-L6-v2"
 OLLAMA_MODEL     = "llama3.2"
-REDIS_TTL        = 3600     # cache expiry in seconds
+REDIS_TTL        = 3600             # cache expiry in seconds
+SEARCH_BACKEND   = "faiss"          # faiss | milvus
+DB_BACKEND       = "sqlite"         # sqlite | supabase
 ```
 
 ---
@@ -128,30 +199,81 @@ REDIS_TTL        = 3600     # cache expiry in seconds
 ## Project Structure
 
 ```
-semantic-search-engine/
-├── embeddings.py        # Session 1: FAISS index + embeddings
-├── graph.py             # Session 2: NetworkX graph layer
-├── rag.py               # Session 3: RAG pipeline
-├── main.py              # Session 4: FastAPI endpoints
-├── database.py          # SQLite metadata store
-├── cache.py             # Redis caching layer
-├── dependencies.py      # Dependency injection (AppResources)
-├── milvus_store.py      # Session 5: Milvus streaming index
-├── config.py            # All configuration in one place
-├── generate_data.py     # Dataset generation
-├── start.sh             # Server startup script
-├── gunicorn_config.py   # Gunicorn production config
+content-discovery-engine/
+├── api/
+│   ├── main.py                  # FastAPI app — mounts routers only
+│   ├── dependencies.py          # AppResources dependency injection
+│   └── routers/
+│       ├── auth.py              # /auth/* endpoints + JWT dependency
+│       ├── movies.py            # /similar, /recommend, /explain, /search
+│       ├── features.py          # /features, /recommend/personalized
+│       └── admin.py             # /health, /evaluate, /cache/*, /milvus/upsert
+├── core/
+│   ├── embeddings.py            # FAISS index + sentence-transformers
+│   ├── graph.py                 # NetworkX graph layer
+│   ├── rag.py                   # RAG pipeline (retrieve → augment → generate)
+│   └── milvus_store.py          # Milvus vector DB (real-time upsert)
+├── store/
+│   ├── database.py              # Router: sqlite or supabase backend
+│   ├── database_sqlite.py       # SQLite implementation
+│   ├── database_supabase.py     # PostgreSQL/Supabase implementation
+│   ├── supabase_client.py       # Supabase auth + PostgreSQL connection
+│   ├── migrate.py               # One-time Supabase table creation + seeding
+│   ├── cache.py                 # Redis caching layer
+│   ├── feature_store.py         # Custom feature store
+│   ├── generate_features.py     # Generates parquet for Feast
+│   └── feature_repo/            # Feast configuration
+│       ├── feature_store.yaml
+│       ├── features.py
+│       └── data/                # Parquet offline store
 ├── data/
-│   └── movies.csv       # Movie dataset
-└── indexes/             # Generated indexes (not committed)
-    ├── movies.faiss
-    ├── movies.db
-    ├── embeddings.npy
-    └── movies_graph.pkl
+│   └── movies.csv               # 101-movie dataset
+├── indexes/                     # Generated indexes (not committed)
+│   ├── movies.faiss
+│   ├── movies.db
+│   ├── embeddings.npy
+│   └── movies_graph.pkl
+├── config.py                    # All configuration + env var loading
+├── generate_data.py             # Dataset generation
+├── start.sh                     # Server startup script
+├── gunicorn_config.py           # Gunicorn production config
+├── requirements.txt
+└── .env                         # Local secrets (never committed)
 ```
 
+---
 
 ## Architecture
 
-![Architecture](semantic_search_engine_architecture.svg)
+```
+Client
+  │
+  ▼
+FastAPI (Gunicorn + UvicornWorker)
+  │
+  ├── Auth Router ──────────────── Supabase Auth (JWT)
+  │
+  ├── Movies Router
+  │     ├── FAISS Index ────────── Semantic similarity search
+  │     ├── NetworkX Graph ─────── Genre + similarity traversal
+  │     └── Ollama (llama3.2) ──── RAG explanation generation
+  │
+  ├── Features Router
+  │     ├── Feast Feature Store ── Redis online store (port 6380)
+  │     └── Two-Tower Ranking ──── FAISS+Graph retrieval → Feast re-ranking
+  │
+  └── Admin Router
+        ├── Redis Cache ─────────── TTL-based response caching (port 6379)
+        └── Milvus ──────────────── Real-time vector upsert
+```
 
+---
+
+## Database Schema (Supabase)
+
+```sql
+movies        — id, title, year, genre, description
+users         — id (UUID), email, created_at
+ratings       — user_id, movie_id, rating (1-5), watched_pct
+watch_history — user_id, movie_id, watched_pct, watched_at
+```

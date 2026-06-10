@@ -16,7 +16,7 @@ import faiss
 from pymilvus import MilvusClient, DataType
 from sentence_transformers import SentenceTransformer
 from store.database import get_all_movies, get_movie_by_title
-from config import (MILVUS_URI, MILVUS_COLLECTION,
+from config import (MILVUS_URI, MILVUS_COLLECTION, MILVUS_TOKEN,
                     EMBEDDING_DIM, EMBEDDING_MODEL)
 from functools import lru_cache
 
@@ -79,7 +79,7 @@ def get_index_params(client: MilvusClient):
 # ── Connect ────────────────────────────────────────────
 def get_client() -> MilvusClient:
     """Returns a connected MilvusClient."""
-    return MilvusClient(uri=MILVUS_URI)
+    return MilvusClient(uri=MILVUS_URI, token=MILVUS_TOKEN)
 
 @lru_cache(maxsize=1)
 def get_model():
