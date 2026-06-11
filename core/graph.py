@@ -4,7 +4,6 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import networkx as nx
 import pandas as pd
 import pickle
-import faiss
 import numpy as np
 from pathlib import Path
 from store.database import get_all_movies, get_movie_by_title
@@ -29,7 +28,8 @@ def build_graph(df):
 
 
 def add_similarity_edges(G, df, threshold=SIMILARITY_THRESHOLD):
-    index = faiss.read_index(str(INDEX_PATH))
+    import faiss  # lazy — only needed when building graph locally
+    index      = faiss.read_index(str(INDEX_PATH))
     embeddings = np.load(str(EMB_PATH))
     for i, row in df.iterrows():
         distances, indices = index.search(embeddings[i:i+1], 6)
@@ -51,6 +51,7 @@ def save_graph(G):
     with open(GRAPH_PATH, "wb") as f:
         pickle.dump(G, f)
     print(f"[Graph] Saved to {GRAPH_PATH}")
+
 
 def load_graph():
     with open(GRAPH_PATH, "rb") as f:
@@ -96,6 +97,7 @@ def graph_recommend(query_title, top_k=4, verbose=True):
 
 
 def combined_recommend(query_title, top_k=4):
+    import faiss  # lazy — only needed in FAISS mode
     index = faiss.read_index(str(INDEX_PATH))
     with open(META_PATH, "rb") as f:
         payload = pickle.load(f)
@@ -138,6 +140,19 @@ def combined_recommend(query_title, top_k=4):
 
 
 def combined_recommend_silent(query_title, top_k=4):
+    """
+    Called by API endpoints — uses graph only in Milvus mode,
+    falls back to FAISS+graph in FAISS mode.
+    """
+    from config import SEARCH_BACKEND
+
+    if SEARCH_BACKEND == "milvus":
+        # graph-only recommendations — no faiss needed
+        graph_results = graph_recommend(query_title, top_k=top_k, verbose=False)
+        return graph_results
+
+    # FAISS mode — combined FAISS + graph
+    import faiss  # lazy — only imported in FAISS mode
     index = faiss.read_index(str(INDEX_PATH))
     with open(META_PATH, "rb") as f:
         payload = pickle.load(f)

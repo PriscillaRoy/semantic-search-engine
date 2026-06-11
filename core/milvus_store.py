@@ -12,8 +12,14 @@ Mirrors patterns from match-ai milvus_client.py but uses
 the modern MilvusClient API instead of ORM-style connections.
 """
 import numpy as np
-import faiss
 from pymilvus import MilvusClient, DataType
+
+
+def normalize_l2(vectors: np.ndarray) -> np.ndarray:
+    """L2 normalize using numpy — replaces faiss.normalize_L2()."""
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)
+    return vectors / norms
 from sentence_transformers import SentenceTransformer
 from store.database import get_all_movies, get_movie_by_title
 from config import (MILVUS_URI, MILVUS_COLLECTION, MILVUS_TOKEN,
@@ -132,8 +138,7 @@ def build_milvus_index():
     from core.embeddings import prepare_text
     texts      = [prepare_text(m) for m in movies]
     embeddings = model.encode(texts, show_progress_bar=True)
-    embeddings = embeddings.astype(np.float32)
-    faiss.normalize_L2(embeddings)
+    embeddings = normalize_l2(embeddings.astype(np.float32))
 
     # batch insert — mirrors milvus_loader.py pattern
     data = []
@@ -169,8 +174,7 @@ def upsert_movie(movie: dict):
 
     from core.embeddings import prepare_text
     text      = prepare_text(movie)
-    embedding = model.encode([text]).astype(np.float32)
-    faiss.normalize_L2(embedding)
+    embedding = normalize_l2(model.encode([text]).astype(np.float32))
 
     client.upsert(
         collection_name=MILVUS_COLLECTION,
@@ -194,20 +198,20 @@ def milvus_search(query_text: str, top_k: int = 4) -> list:
     client = get_client()
     model  = get_model()
 
-    qvec = model.encode([query_text]).astype(np.float32)
-    faiss.normalize_L2(qvec)
+    qvec = normalize_l2(model.encode([query_text]).astype(np.float32))
 
     results = client.search(
         collection_name=MILVUS_COLLECTION,
         data=qvec.tolist(),
         limit=top_k,
-        output_fields=["title", "genre", "year"],
+        output_fields=["id", "title", "genre", "year"],
         search_params={"metric_type": "IP", "params": {"nprobe": 8}}
     )
 
     hits = []
     for hit in results[0]:
         hits.append({
+            "id":         hit["entity"]["id"], 
             "title":      hit["entity"]["title"],
             "genre":      hit["entity"]["genre"],
             "year":       hit["entity"]["year"],
