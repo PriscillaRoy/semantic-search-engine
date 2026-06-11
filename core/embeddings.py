@@ -1,8 +1,14 @@
 import pandas as pd
 import numpy as np
-import faiss
 import pickle
 from pathlib import Path
+
+# faiss is optional — not available in production (Milvus mode)
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
 from sentence_transformers import SentenceTransformer
 from store.database import get_all_movies, get_movie_by_title
 from store.database_sqlite import init_db
@@ -52,7 +58,6 @@ def embed_descriptions(df):
 def build_index(embeddings):
     dim       = embeddings.shape[1]
     n_vectors = embeddings.shape[0]
-
     # ── Metric registry ────────────────────────────────
     # Maps config string → (faiss metric constant, flat index class)
     # Add new metrics here — no changes needed elsewhere
@@ -206,6 +211,9 @@ def search_by_description(query_text: str, top_k: int = 4, resources=None):
         distances, indices = resources.search(qvec, top_k)
     else:
         # called as standalone script — load from disk
+        if not FAISS_AVAILABLE:
+            print("[search_by_description] FAISS not available in production.")
+            return []
         index = faiss.read_index(str(INDEX_PATH))
         with open(META_PATH, "rb") as f:
             payload = pickle.load(f)
