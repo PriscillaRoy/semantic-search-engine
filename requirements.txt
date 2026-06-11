@@ -40,3 +40,4 @@ boto3==1.38.29
 requests==2.32.3
 tqdm==4.67.1
 PyYAML==6.0.2
+groq==1.4.0

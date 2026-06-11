@@ -65,11 +65,18 @@ Format your response as:
 
 
 def generate(prompt):
-    response = ollama.chat(
-        model=OLLAMA_MODEL,
+    # response = ollama.chat(
+    #     model=OLLAMA_MODEL,
+    #     messages=[{"role": "user", "content": prompt}]
+    # )
+    from groq import Groq
+    import os
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}]
     )
-    return response["message"]["content"]
+    return response.choices[0].message.content
 
 
 def rag_recommend(query_title):
