@@ -27,7 +27,7 @@ def health(resources: AppResources = Depends(get_resources)):
     return {
         "status":         "ok",
         "model":          "llama3.2",
-        "index_size":     resources.index.ntotal,
+        "index_size": resources.index.ntotal if resources.index else "milvus",
         "search_backend": SEARCH_BACKEND
     }
 
