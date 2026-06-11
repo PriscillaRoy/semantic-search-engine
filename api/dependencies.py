@@ -21,13 +21,12 @@ class AppResources:
             self._load_faiss_and_model()
 
     def _load_model_only(self):
-        """Milvus mode — load embedding model only, no FAISS index."""
-        import pickle
+        """Milvus mode — load embedding model directly, no pickle file needed."""
+        from sentence_transformers import SentenceTransformer
+        from config import EMBEDDING_MODEL
         print("[Resources] Milvus backend — loading model only...")
-        with open(META_PATH, "rb") as f:
-            payload = pickle.load(f)
-        self.model = payload["model"]
-        self.index = None   # not used in milvus mode
+        self.model = SentenceTransformer(EMBEDDING_MODEL)
+        self.index = None
         print("[Resources] Ready — model loaded, FAISS skipped")
 
     def _load_faiss_and_model(self):
