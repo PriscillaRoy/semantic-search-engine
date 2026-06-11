@@ -2,7 +2,7 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import numpy as np
-import ollama
+# import ollama
 from pathlib import Path
 from core.graph import combined_recommend_silent
 from store.database import get_movie_by_title, get_all_movies
