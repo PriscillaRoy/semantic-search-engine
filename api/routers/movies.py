@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, field_validator
 
 from config import DEFAULT_TOP_K, MAX_TOP_K, MIN_TOP_K, SEARCH_BACKEND
-from store.database import get_all_movies, get_movie_by_title, get_movie_count
+from store.database import get_all_movies, get_movie_by_title, get_movie_count, get_movies_by_ids
 from core.graph import combined_recommend_silent
 from core.rag import retrieve, build_prompt, generate
 from api.dependencies import AppResources, get_resources
@@ -60,23 +60,30 @@ def get_similar(
     title: str,
     top_k: int = DEFAULT_TOP_K,
     year: int = None,
+    id: int = None,              # ← new: frontend passes this for unambiguous lookup
     return_all: bool = False,
     resources: AppResources = Depends(get_resources)
 ):
     cache_key = make_cache_key("similar", {
         "title": title, "top_k": top_k,
-        "year": year, "return_all": return_all
+        "year": year, "return_all": return_all, "id": id
     })
     cached = get_cached(cache_key)
     if cached:
         cached["cached"] = True
         return cached
 
-    matches = get_movie_by_title(title, year=year)
+    # resolve movie — by id if provided, else by title
+    if id:
+        movies = get_movies_by_ids([id])
+        matches = movies if movies else []
+    else:
+        matches = get_movie_by_title(title, year=year)
+
     if not matches:
         raise HTTPException(status_code=404, detail=f"'{title}' not found")
 
-    if len(matches) > 1 and year is None and not return_all:
+    if len(matches) > 1 and year is None and not return_all and not id:
         return {
             "error":   "multiple_matches",
             "message": f"Multiple matches for '{title}'. "
@@ -85,27 +92,38 @@ def get_similar(
                          "genre": m["genre"]} for m in matches]
         }
 
-    q    = matches[0]
-    qvec = resources.encode(q["description"])
-    distances, indices = resources.search(qvec, top_k + 1)
+    q = matches[0]
 
-    all_movies = get_all_movies()
-    results    = []
-    for dist, idx in zip(distances[0], indices[0]):
-        m = all_movies[idx]
-        if m["title"].lower() == title.lower():
-            continue
-        results.append({
-            "title":      m["title"],
-            "year":       m["year"],
-            "genre":      m["genre"],
-            "similarity": round(float(dist), 4)
-        })
-        if len(results) == top_k:
-            break
+    # use milvus or faiss depending on backend
+    if SEARCH_BACKEND == "milvus":
+        from core.milvus_store import milvus_search
+        results = milvus_search(q["description"], top_k=top_k + 1)
+        # exclude the query movie itself
+        results = [r for r in results if r["title"].lower() != q["title"].lower()][:top_k]
+    else:
+        qvec = resources.encode(q["description"])
+        distances, indices = resources.search(qvec, top_k + 1)
+        all_movies = get_all_movies()
+        results = []
+        for dist, idx in zip(distances[0], indices[0]):
+            m = all_movies[idx]
+            if m["title"].lower() == title.lower():
+                continue
+            results.append({
+                "id":         m["id"],
+                "title":      m["title"],
+                "year":       m["year"],
+                "genre":      m["genre"],
+                "similarity": round(float(dist), 4)
+            })
+            if len(results) == top_k:
+                break
 
-    response = {"query": f"{title} ({q['year']})",
-                "results": results, "cached": False}
+    response = {
+        "query":   f"{q['title']} ({q['year']})",
+        "results": results,
+        "cached":  False
+    }
     set_cached(cache_key, response)
     return response
 
