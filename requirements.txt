@@ -1,6 +1,7 @@
 # Production (Linux x86_64 — Render/Cloud Run)
 # Only direct dependencies — let pip resolve transitive deps
-
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.7.0
 # API
 fastapi==0.115.0
 uvicorn==0.30.6
@@ -12,7 +13,7 @@ python-dotenv==1.2.1
 # ML — no faiss-cpu needed in production (SEARCH_BACKEND=milvus)
 sentence-transformers==4.1.0
 numpy>=2.0.0
-torch==2.7.0
+# torch==2.7.0
 scikit-learn==1.6.1
 
 # Graph
